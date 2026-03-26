@@ -42,6 +42,15 @@ function getFlag(leagueId) {
   return LEAGUES_CONFIG[leagueId]?.flag || '⚽';
 }
 
+// Helper to safely parse Redis value (could be string or already object)
+function safeParse(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value); } catch (e) { return null; }
+  }
+  return value;
+}
+
 module.exports = async function handler(req, res) {
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -94,7 +103,7 @@ module.exports = async function handler(req, res) {
     if (task === 'live') {
       const hour = new Date().getUTCHours();
       if (hour < 10) {
-        return res.json({ success: true, skipped: true, reason: 'Outside match hours' });
+        return res.json({ success: true, skipped: true });
       }
 
       const liveFixtures = await fetchFootball('/fixtures', { live: 'all' });
@@ -106,18 +115,20 @@ module.exports = async function handler(req, res) {
       }), { ex: 1200 });
 
       if (liveFixtures.length > 0) {
-        const todayCache = await redis.get('fixtures:today');
-        if (todayCache) {
-          const todayData = JSON.parse(todayCache);
-          liveFixtures.forEach(liveMatch => {
-            const id = liveMatch.fixture?.id;
-            todayData.data.forEach(group => {
-              group.fixtures = group.fixtures.map(m =>
-                m.fixture?.id === id ? liveMatch : m
-              );
+        const todayRaw = await redis.get('fixtures:today');
+        if (todayRaw) {
+          const todayData = safeParse(todayRaw);
+          if (todayData) {
+            liveFixtures.forEach(liveMatch => {
+              const id = liveMatch.fixture?.id;
+              todayData.data.forEach(group => {
+                group.fixtures = group.fixtures.map(m =>
+                  m.fixture?.id === id ? liveMatch : m
+                );
+              });
             });
-          });
-          await redis.set('fixtures:today', JSON.stringify(todayData), { ex: 93600 });
+            await redis.set('fixtures:today', JSON.stringify(todayData), { ex: 93600 });
+          }
         }
       }
 
@@ -148,12 +159,16 @@ module.exports = async function handler(req, res) {
 
     // ── WEEKLY PREDICTIONS ─────────────────────────────
     if (task === 'weekly') {
-      const upcomingCache = await redis.get('fixtures:upcoming');
-      if (!upcomingCache) {
+      const upcomingRaw = await redis.get('fixtures:upcoming');
+      if (!upcomingRaw) {
         return res.json({ success: false, reason: 'No upcoming fixtures cached' });
       }
 
-      const upcoming = JSON.parse(upcomingCache);
+      const upcoming = safeParse(upcomingRaw);
+      if (!upcoming || !upcoming.data) {
+        return res.json({ success: false, reason: 'Invalid upcoming fixtures data' });
+      }
+
       const allFixtures = upcoming.data.flatMap(l => l.fixtures || []);
       const sorted = allFixtures.sort((a, b) =>
         PRIORITY.indexOf(a.league?.id) - PRIORITY.indexOf(b.league?.id)
@@ -221,6 +236,44 @@ module.exports = async function handler(req, res) {
         predictionsCount: Object.keys(predictions).length,
         callsUsed
       });
+    }
+
+    // ── TEAM FORMS ─────────────────────────────────────
+    if (task === 'team-forms') {
+      const upcomingRaw = await redis.get('fixtures:upcoming');
+      if (!upcomingRaw) {
+        return res.json({ success: false, reason: 'No upcoming fixtures' });
+      }
+
+      const upcoming = safeParse(upcomingRaw);
+      if (!upcoming || !upcoming.data) {
+        return res.json({ success: false, reason: 'Invalid upcoming fixtures data' });
+      }
+
+      const allFixtures = upcoming.data.flatMap(l => l.fixtures || []);
+      const teamIds = new Set();
+      allFixtures.forEach(f => {
+        if (f.teams?.home?.id) teamIds.add(f.teams.home.id);
+        if (f.teams?.away?.id) teamIds.add(f.teams.away.id);
+      });
+
+      for (const teamId of teamIds) {
+        try {
+          const fixtures = await fetchFootball('/fixtures', { team: teamId, last: 6, status: 'FT' });
+          const form = fixtures.map(f => {
+            const isHome = f.teams?.home?.id === teamId;
+            const winner = isHome ? f.teams?.home?.winner : f.teams?.away?.winner;
+            const draw = !f.teams?.home?.winner && !f.teams?.away?.winner;
+            if (draw) return 'D';
+            return winner ? 'W' : 'L';
+          });
+          await redis.set(`team_form:${teamId}`, JSON.stringify(form), { ex: 86400 });
+          await new Promise(r => setTimeout(r, 200));
+        } catch (e) {
+          console.error(`Failed to fetch form for team ${teamId}:`, e.message);
+        }
+      }
+      return res.json({ success: true, teamsProcessed: teamIds.size });
     }
 
     return res.status(400).json({ error: 'Invalid task' });
