@@ -1,12 +1,10 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
-  ],
+  "rewrites": [{ "source": "/(.*)", "destination": "/" }],
   "crons": [
-    { "path": "/api/cron/daily-fixtures", "schedule": "0 0 * * *" },
-    { "path": "/api/cron/live-scores", "schedule": "0 1 * * *" },
-    { "path": "/api/cron/weekly-predictions", "schedule": "0 0 * * 4" },
-    { "path": "/api/cron/standings", "schedule": "0 1 * * 0" },
-    { "path": "/api/cron/team-forms", "schedule": "0 3 * * *" }
+    { "path": "/api/cron/update?task=daily", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/update?task=live", "schedule": "0 1 * * *" },
+    { "path": "/api/cron/update?task=weekly", "schedule": "0 0 * * 4" },
+    { "path": "/api/cron/update?task=standings", "schedule": "0 1 * * 0" },
+    { "path": "/api/cron/update?task=team-forms", "schedule": "0 3 * * *" }
   ]
 }
