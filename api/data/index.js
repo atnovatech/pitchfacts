@@ -5,18 +5,31 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
+// Helper to safely parse Redis values (stored as strings)
+function safeParse(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      return null;
+    }
+  }
+  return value; // if already an object, return as is
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   const { type, leagueId, fixtureId, teamId } = req.query;
 
   try {
-
     // ── TODAY ─────────────────────────────────────────
     if (type === 'today') {
       const cached = await redis.get('fixtures:today');
       if (cached) {
-        return res.json(cached); // ✅ no JSON.parse
+        const parsed = safeParse(cached);
+        return res.json(parsed || { data: [] });
       }
       return res.json({ data: [] });
     }
@@ -25,7 +38,8 @@ module.exports = async function handler(req, res) {
     if (type === 'live') {
       const cached = await redis.get('fixtures:live');
       if (cached) {
-        return res.json(cached);
+        const parsed = safeParse(cached);
+        return res.json(parsed || { data: [], count: 0 });
       }
       return res.json({ data: [], count: 0 });
     }
@@ -34,47 +48,44 @@ module.exports = async function handler(req, res) {
     if (type === 'upcoming') {
       const cached = await redis.get('fixtures:upcoming');
       if (cached) {
-        return res.json(cached);
+        const parsed = safeParse(cached);
+        return res.json(parsed || { data: [] });
       }
       return res.json({ data: [] });
     }
 
     // ── PREDICTIONS ───────────────────────────────────
     if (type === 'predictions') {
-      const data = await redis.get('predictions:weekly');
-
+      const cached = await redis.get('predictions:weekly');
+      if (!cached) return res.json({ predictions: {} });
+      const data = safeParse(cached);
       if (!data) return res.json({ predictions: {} });
-
       if (fixtureId && data.predictions) {
         return res.json(data.predictions[fixtureId] || null);
       }
-
       return res.json(data);
     }
 
     // ── STANDINGS ─────────────────────────────────────
     if (type === 'standings') {
-      const data = await redis.get('standings:all');
-
+      const cached = await redis.get('standings:all');
+      if (!cached) return res.json([]);
+      const data = safeParse(cached);
       if (!data) return res.json([]);
-
       if (leagueId) {
         return res.json(data.data?.[leagueId] || []);
       }
-
       return res.json(data);
     }
 
     // ── TEAM FORM ─────────────────────────────────────
     if (type === 'team-form') {
       if (!teamId) return res.status(400).json({ error: 'Missing teamId' });
-
       const cached = await redis.get(`team_form:${teamId}`);
-
       if (cached) {
-        return res.json(cached);
+        const parsed = safeParse(cached);
+        return res.json(parsed || []);
       }
-
       return res.json([]);
     }
 
@@ -85,31 +96,27 @@ module.exports = async function handler(req, res) {
       }
 
       const cached = await redis.get(`injuries:${fixtureId}`);
-
       if (cached) {
-        return res.json(cached);
+        const parsed = safeParse(cached);
+        return res.json(parsed || []);
       }
 
-      // fetch from API (ONLY when not cached)
-      const fetchFootball = async (endpoint, params = {}) => {
-        const url = new URL(`https://v3.football.api-sports.io${endpoint}`);
-        Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+      // Use server-side API key (FOOTBALL_API_KEY, not REACT_APP_)
+      const apiKey = process.env.FOOTBALL_API_KEY;
+      if (!apiKey) {
+        console.error('❌ FOOTBALL_API_KEY not set');
+        return res.json([]);
+      }
 
-        const res = await fetch(url.toString(), {
-          headers: {
-            'x-apisports-key': process.env.REACT_APP_FOOTBALL_API_KEY
-          }
-        });
+      const url = `https://v3.football.api-sports.io/injuries?fixture=${fixtureId}`;
+      const apiRes = await fetch(url, {
+        headers: { 'x-apisports-key': apiKey }
+      });
+      const data = await apiRes.json();
+      const injuries = data.response || [];
 
-        const data = await res.json();
-        return data.response || [];
-      };
-
-      const injuries = await fetchFootball('/injuries', { fixture: fixtureId });
-
-      // ✅ store as object (NO JSON.stringify)
+      // Store as object (Redis client will stringify automatically)
       await redis.set(`injuries:${fixtureId}`, injuries, { ex: 7200 });
-
       return res.json(injuries);
     }
 

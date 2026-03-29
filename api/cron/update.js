@@ -18,13 +18,25 @@ const LEAGUES_CONFIG = {
 
 const PRIORITY = [2, 39, 140, 135, 78, 61, 71, 128];
 
+// Correct API key for server‑side
 async function fetchFootball(endpoint, params = {}) {
+  const apiKey = process.env.FOOTBALL_API_KEY;
+  if (!apiKey) {
+    console.error('❌ FOOTBALL_API_KEY is not set in environment');
+    return [];
+  }
+
   const url = new URL(`https://v3.football.api-sports.io${endpoint}`);
   Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+
   const res = await fetch(url.toString(), {
-    headers: { 'x-apisports-key': process.env.REACT_APP_FOOTBALL_API_KEY }
+    headers: { 'x-apisports-key': apiKey }
   });
   const data = await res.json();
+
+  // Log for debugging
+  console.log(`📡 ${endpoint} → results: ${data.results}, errors: ${JSON.stringify(data.errors)}`);
+
   return data.response || [];
 }
 
@@ -42,7 +54,6 @@ function getFlag(leagueId) {
   return LEAGUES_CONFIG[leagueId]?.flag || '⚽';
 }
 
-// Helper to safely parse Redis value (could be string or already object)
 function safeParse(value) {
   if (!value) return null;
   if (typeof value === 'string') {
@@ -62,11 +73,13 @@ module.exports = async function handler(req, res) {
     // ── DAILY ──────────────────────────────────────────
     if (task === 'daily') {
       const today = new Date().toISOString().split('T')[0];
-      const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0];
+      const nextMonth = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]; // 30 days
+
+      console.log(`📅 Fetching fixtures for today: ${today} and upcoming until ${nextMonth}`);
 
       const [fixtures, upcoming] = await Promise.all([
         fetchFootball('/fixtures', { date: today, timezone: 'UTC' }),
-        fetchFootball('/fixtures', { from: today, to: nextWeek, status: 'NS', timezone: 'UTC' }),
+        fetchFootball('/fixtures', { from: today, to: nextMonth, status: 'NS', timezone: 'UTC' }),
       ]);
 
       const group = (arr) => {
@@ -96,7 +109,8 @@ module.exports = async function handler(req, res) {
         }), { ex: 93600 }),
       ]);
 
-      return res.json({ success: true, task: 'daily', matchCount: fixtures.length });
+      console.log(`✅ Daily: today=${fixtures.length} matches, upcoming=${upcoming.length} matches`);
+      return res.json({ success: true, task: 'daily', matchCount: fixtures.length, upcomingCount: upcoming.length });
     }
 
     // ── LIVE ───────────────────────────────────────────
@@ -108,17 +122,24 @@ module.exports = async function handler(req, res) {
 
       const liveFixtures = await fetchFootball('/fixtures', { live: 'all' });
 
-      await redis.set('fixtures:live', JSON.stringify({
-        data: liveFixtures,
-        count: liveFixtures.length,
-        fetchedAt: new Date().toISOString()
-      }), { ex: 1200 });
+      // Only keep matches that are really in progress
+      const LIVE_STATUSES = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'INT', 'LIVE'];
+      const actuallyLive = liveFixtures.filter(f =>
+        LIVE_STATUSES.includes(f.fixture?.status?.short)
+      );
 
+      await redis.set('fixtures:live', JSON.stringify({
+        data: actuallyLive,
+        count: actuallyLive.length,
+        fetchedAt: new Date().toISOString()
+      }), { ex: 900 }); // 15 minutes
+
+      // Also update today's cache with latest scores (including finished matches)
       if (liveFixtures.length > 0) {
         const todayRaw = await redis.get('fixtures:today');
         if (todayRaw) {
           const todayData = safeParse(todayRaw);
-          if (todayData) {
+          if (todayData && todayData.data) {
             liveFixtures.forEach(liveMatch => {
               const id = liveMatch.fixture?.id;
               todayData.data.forEach(group => {
@@ -132,7 +153,8 @@ module.exports = async function handler(req, res) {
         }
       }
 
-      return res.json({ success: true, liveCount: liveFixtures.length });
+      console.log(`🔴 Live: ${actuallyLive.length} live matches, ${liveFixtures.length} total (including FT)`);
+      return res.json({ success: true, liveCount: actuallyLive.length, totalFetched: liveFixtures.length });
     }
 
     // ── STANDINGS ──────────────────────────────────────
