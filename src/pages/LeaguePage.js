@@ -168,33 +168,144 @@ export default function LeaguePage({ leagueId, leagueName, language }) {
             </div>
           )}
 
-          {/* Standings tab */}
+          {/* Standings tab – UPDATED */}
           {tab === 'standings' && (
-            <div style={{ background: '#1a1a1a', borderRadius: '12px', overflow: 'hidden' }}>
-              <div style={{ padding: '15px', borderBottom: '1px solid #252525', fontSize: '14px', fontWeight: '700' }}>
-                {leagueName} Standings
+            <div style={{ background: '#1a1a1a', borderRadius: '12px', overflow: 'hidden', border: '1px solid #252525' }}>
+
+              {/* Table Header */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '30px 1fr 35px 35px 35px 35px 35px 35px 40px',
+                padding: '10px 15px',
+                borderBottom: '1px solid #252525',
+                fontSize: '11px',
+                color: '#555',
+                fontWeight: '700',
+                textTransform: 'uppercase',
+                gap: '5px',
+              }}>
+                <span>#</span>
+                <span>Team</span>
+                <span style={{ textAlign: 'center' }}>P</span>
+                <span style={{ textAlign: 'center' }}>W</span>
+                <span style={{ textAlign: 'center' }}>D</span>
+                <span style={{ textAlign: 'center' }}>L</span>
+                <span style={{ textAlign: 'center' }}>GF</span>
+                <span style={{ textAlign: 'center' }}>GD</span>
+                <span style={{ textAlign: 'center' }}>PTS</span>
               </div>
-              {standings.slice(0, 20).map((team, i) => (
-                <div key={team.team?.id} style={{
-                  display: 'flex', alignItems: 'center', gap: '12px',
-                  padding: '10px 15px',
-                  borderBottom: '1px solid #1a1a1a',
-                  background: i % 2 === 0 ? '#1a1a1a' : '#161616',
-                }}>
-                  <span style={{ width: '20px', textAlign: 'center', fontSize: '12px', color: '#666' }}>
-                    {team.rank}
-                  </span>
-                  {team.team?.logo && (
-                    <img src={team.team.logo} alt="" style={{ width: '20px', height: '20px', objectFit: 'contain' }} />
-                  )}
-                  <span style={{ flex: 1, fontSize: '13px', color: '#ddd' }}>{team.team?.name}</span>
-                  <span style={{ fontSize: '12px', color: '#888', width: '25px', textAlign: 'center' }}>{team.all?.played}</span>
-                  <span style={{ fontSize: '12px', color: '#888', width: '25px', textAlign: 'center' }}>{team.goalsDiff > 0 ? '+' : ''}{team.goalsDiff}</span>
-                  <span style={{ fontSize: '13px', fontWeight: '700', color: '#00c851', width: '30px', textAlign: 'center' }}>
-                    {team.points}
-                  </span>
-                </div>
-              ))}
+
+              {/* Table Rows */}
+              {standings.map((team, i) => {
+                // Zone colors for top 4, Europa, relegation
+                const getZoneColor = (rank) => {
+                  if (rank <= 4) return '#003d1a';   // Champions League – green
+                  if (rank <= 6) return '#1a1a00';   // Europa – yellow
+                  if (rank >= standings.length - 2) return '#1a0000'; // Relegation – red
+                  return 'transparent';
+                };
+
+                return (
+                  <div
+                    key={team.team?.id || i}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '30px 1fr 35px 35px 35px 35px 35px 35px 40px',
+                      padding: '10px 15px',
+                      borderBottom: '1px solid #161616',
+                      background: getZoneColor(team.rank),
+                      alignItems: 'center',
+                      gap: '5px',
+                      transition: 'background 0.2s',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = '#222'}
+                    onMouseLeave={e => e.currentTarget.style.background = getZoneColor(team.rank)}
+                  >
+                    {/* Rank */}
+                    <span style={{
+                      fontSize: '12px',
+                      color: team.rank <= 4 ? '#00c851'
+                           : team.rank >= standings.length - 2 ? '#ff4444'
+                           : '#666',
+                      fontWeight: '700',
+                    }}>
+                      {team.rank}
+                    </span>
+
+                    {/* Team name + logo */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                      {team.team?.logo && (
+                        <img
+                          src={team.team.logo}
+                          alt={team.team.name}
+                          style={{ width: '20px', height: '20px', objectFit: 'contain', flexShrink: 0 }}
+                        />
+                      )}
+                      <span style={{
+                        fontSize: '13px',
+                        color: '#ddd',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}>
+                        {team.team?.name}
+                      </span>
+                    </div>
+
+                    {/* Stats */}
+                    {[
+                      team.all?.played,
+                      team.all?.win,
+                      team.all?.draw,
+                      team.all?.lose,
+                      team.goalsFor ?? '-',
+                      team.goalsDiff > 0 ? `+${team.goalsDiff}` : team.goalsDiff,
+                    ].map((val, idx) => (
+                      <span key={idx} style={{
+                        fontSize: '12px',
+                        color: idx === 5 ? (team.goalsDiff > 0 ? '#00c851' : team.goalsDiff < 0 ? '#ff4444' : '#888') : '#888',
+                        textAlign: 'center',
+                      }}>
+                        {val ?? '-'}
+                      </span>
+                    ))}
+
+                    {/* Points */}
+                    <span style={{
+                      fontSize: '14px',
+                      fontWeight: '800',
+                      color: '#fff',
+                      textAlign: 'center',
+                    }}>
+                      {team.points}
+                    </span>
+                  </div>
+                );
+              })}
+
+              {/* Legend */}
+              <div style={{
+                padding: '12px 15px',
+                display: 'flex',
+                gap: '20px',
+                flexWrap: 'wrap',
+                borderTop: '1px solid #252525',
+              }}>
+                {[
+                  { color: '#00c851', label: 'Champions League' },
+                  { color: '#ffcc00', label: 'Europa League' },
+                  { color: '#ff4444', label: 'Relegation' },
+                ].map(item => (
+                  <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div style={{
+                      width: '10px', height: '10px',
+                      borderRadius: '2px',
+                      background: item.color,
+                    }} />
+                    <span style={{ fontSize: '11px', color: '#555' }}>{item.label}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

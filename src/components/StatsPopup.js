@@ -222,6 +222,95 @@ export default function StatsPopup({ fixture, onClose, language }) {
                 </div>
               ))}
 
+              {/* League Table – Updated compact version */}
+              {standings.length > 0 && section(t(language, 'leagueTable'), (
+                <div style={{ borderRadius: '8px', overflow: 'hidden' }}>
+                  {/* Header */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '25px 1fr 30px 30px 30px 35px',
+                    padding: '6px 10px',
+                    background: '#141414',
+                    fontSize: '10px',
+                    color: '#555',
+                    fontWeight: '700',
+                    gap: '4px',
+                  }}>
+                    <span>#</span>
+                    <span>Team</span>
+                    <span style={{ textAlign: 'center' }}>P</span>
+                    <span style={{ textAlign: 'center' }}>GD</span>
+                    <span style={{ textAlign: 'center' }}>GF</span>
+                    <span style={{ textAlign: 'center' }}>PTS</span>
+                  </div>
+
+                  {/* Show only teams near the match teams — 5 above and below */}
+                  {(() => {
+                    const homeRank = homeStanding?.rank || 1;
+                    const awayRank = awayStanding?.rank || 1;
+                    const minRank = Math.max(1, Math.min(homeRank, awayRank) - 2);
+                    const maxRank = Math.min(standings.length, Math.max(homeRank, awayRank) + 2);
+                    const visible = standings.filter(s => s.rank >= minRank && s.rank <= maxRank);
+
+                    return visible.map((entry, i) => {
+                      const isHome = entry.team?.id === home?.id;
+                      const isAway = entry.team?.id === away?.id;
+
+                      return (
+                        <div
+                          key={entry.team?.id || i}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '25px 1fr 30px 30px 30px 35px',
+                            padding: '7px 10px',
+                            background: isHome ? '#001a0d'
+                                      : isAway ? '#1a0000'
+                                      : i % 2 === 0 ? '#1a1a1a' : '#161616',
+                            borderLeft: isHome ? '3px solid #00c851'
+                                      : isAway ? '3px solid #ff4444'
+                                      : '3px solid transparent',
+                            alignItems: 'center',
+                            gap: '4px',
+                          }}
+                        >
+                          <span style={{ fontSize: '11px', color: '#666' }}>{entry.rank}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
+                            {entry.team?.logo && (
+                              <img src={entry.team.logo} alt="" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
+                            )}
+                            <span style={{
+                              fontSize: '11px',
+                              color: isHome ? '#00c851' : isAway ? '#ff4444' : '#ccc',
+                              fontWeight: (isHome || isAway) ? '700' : '400',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}>
+                              {entry.team?.name}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '11px', color: '#888', textAlign: 'center' }}>{entry.all?.played}</span>
+                          <span style={{ fontSize: '11px', color: entry.goalsDiff > 0 ? '#00c851' : entry.goalsDiff < 0 ? '#ff4444' : '#888', textAlign: 'center' }}>
+                            {entry.goalsDiff > 0 ? `+${entry.goalsDiff}` : entry.goalsDiff}
+                          </span>
+                          <span style={{ fontSize: '11px', color: '#888', textAlign: 'center' }}>{entry.goalsFor ?? '-'}</span>
+                          <span style={{ fontSize: '12px', fontWeight: '800', color: '#fff', textAlign: 'center' }}>
+                            {entry.points}
+                          </span>
+                        </div>
+                      );
+                    });
+                  })()}
+
+                  {/* Full table link */}
+                  <div style={{ padding: '8px', textAlign: 'center' }}>
+                    <span style={{ fontSize: '11px', color: '#555' }}>
+                      Showing teams around this match • View full table in league page
+                    </span>
+                  </div>
+                </div>
+              ))}
+
               {/* Probable outcome */}
               {section(t(language, 'outcome'), (
                 <div>
