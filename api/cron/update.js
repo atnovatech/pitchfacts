@@ -1,57 +1,26 @@
 const { Redis } = require('@upstash/redis');
+const {
+  getTodayFixtures,
+  getUpcomingFixtures,
+  getAllStandings,
+  getTeamForm,
+  getH2H,
+} = require('../lib/football');
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
-const LEAGUES_CONFIG = {
-  2:   { name: 'Champions League', season: 2024, flag: '🏆' },
-  39:  { name: 'Premier League',   season: 2024, flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  140: { name: 'La Liga',          season: 2024, flag: '🇪🇸' },
-  135: { name: 'Serie A',          season: 2024, flag: '🇮🇹' },
-  78:  { name: 'Bundesliga',       season: 2024, flag: '🇩🇪' },
-  61:  { name: 'Ligue 1',          season: 2024, flag: '🇫🇷' },
-  71:  { name: 'Brasileirão',      season: 2025, flag: '🇧🇷' },
-  128: { name: 'Liga Profesional', season: 2025, flag: '🇦🇷' },
-};
-
 const PRIORITY = [2, 39, 140, 135, 78, 61, 71, 128];
 
-// Correct API key for server‑side
-async function fetchFootball(endpoint, params = {}) {
-  const apiKey = process.env.FOOTBALL_API_KEY;
-  if (!apiKey) {
-    console.error('❌ FOOTBALL_API_KEY is not set in environment');
-    return [];
-  }
-
-  const url = new URL(`https://v3.football.api-sports.io${endpoint}`);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
-
-  const res = await fetch(url.toString(), {
-    headers: { 'x-apisports-key': apiKey }
-  });
-  const data = await res.json();
-
-  // Log for debugging
-  console.log(`📡 ${endpoint} → results: ${data.results}, errors: ${JSON.stringify(data.errors)}`);
-
-  return data.response || [];
-}
-
 function calculateConfidence(homeWins, awayWins, total) {
-  const diff = Math.abs(homeWins - awayWins);
-  const ratio = diff / total;
-  if (ratio >= 0.7) return 5;
-  if (ratio >= 0.5) return 4;
-  if (ratio >= 0.3) return 3;
-  if (ratio >= 0.15) return 2;
+  const diff = Math.abs(homeWins - awayWins) / total;
+  if (diff >= 0.7) return 5;
+  if (diff >= 0.5) return 4;
+  if (diff >= 0.3) return 3;
+  if (diff >= 0.15) return 2;
   return 1;
-}
-
-function getFlag(leagueId) {
-  return LEAGUES_CONFIG[leagueId]?.flag || '⚽';
 }
 
 function safeParse(value) {
@@ -70,125 +39,107 @@ module.exports = async function handler(req, res) {
   const { task } = req.query;
 
   try {
-    // ── DAILY ──────────────────────────────────────────
+
+    // ── DAILY ─────────────────────────────────────────
     if (task === 'daily') {
-      const today = new Date().toISOString().split('T')[0];
-      const nextMonth = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]; // 30 days
+      console.log('📅 Running daily fixtures fetch...');
 
-      console.log(`📅 Fetching fixtures for today: ${today} and upcoming until ${nextMonth}`);
-
-      const [fixtures, upcoming] = await Promise.all([
-        fetchFootball('/fixtures', { date: today, timezone: 'UTC' }),
-        fetchFootball('/fixtures', { from: today, to: nextMonth, status: 'NS', timezone: 'UTC' }),
+      const [todayFixtures, upcomingFixtures] = await Promise.all([
+        getTodayFixtures(),
+        getUpcomingFixtures(),
       ]);
-
-      const group = (arr) => {
-        const grouped = {};
-        arr.forEach(match => {
-          const leagueId = match.league?.id;
-          if (!leagueId) return;
-          if (!grouped[leagueId]) {
-            grouped[leagueId] = {
-              league: { ...match.league, flag: getFlag(leagueId) },
-              fixtures: []
-            };
-          }
-          grouped[leagueId].fixtures.push(match);
-        });
-        return Object.values(grouped);
-      };
 
       await Promise.all([
         redis.set('fixtures:today', JSON.stringify({
-          data: group(fixtures), date: today,
-          fetchedAt: new Date().toISOString()
+          data: todayFixtures,
+          date: new Date().toISOString().split('T')[0],
+          fetchedAt: new Date().toISOString(),
+          source: 'football-data.org + thesportsdb'
         }), { ex: 93600 }),
+
         redis.set('fixtures:upcoming', JSON.stringify({
-          data: group(upcoming),
-          fetchedAt: new Date().toISOString()
+          data: upcomingFixtures,
+          fetchedAt: new Date().toISOString(),
+          source: 'football-data.org'
         }), { ex: 93600 }),
       ]);
 
-      console.log(`✅ Daily: today=${fixtures.length} matches, upcoming=${upcoming.length} matches`);
-      return res.json({ success: true, task: 'daily', matchCount: fixtures.length, upcomingCount: upcoming.length });
+      const todayCount = todayFixtures.reduce((sum, l) => sum + l.fixtures.length, 0);
+      const upcomingCount = upcomingFixtures.reduce((sum, l) => sum + l.fixtures.length, 0);
+
+      console.log(`✅ Daily: ${todayCount} today, ${upcomingCount} upcoming`);
+      return res.json({
+        success: true,
+        task: 'daily',
+        todayMatches: todayCount,
+        upcomingMatches: upcomingCount,
+      });
     }
 
-    // ── LIVE ───────────────────────────────────────────
+    // ── LIVE ──────────────────────────────────────────
+    // Live scores come from Python/GitHub Actions
+    // This task just filters today's cache for in-play matches
     if (task === 'live') {
-      const hour = new Date().getUTCHours();
-      if (hour < 10) {
-        return res.json({ success: true, skipped: true });
+      const todayRaw = await redis.get('fixtures:today');
+      if (!todayRaw) {
+        return res.json({ success: true, liveCount: 0, note: 'No today cache' });
       }
 
-      const liveFixtures = await fetchFootball('/fixtures', { live: 'all' });
+      const todayData = safeParse(todayRaw);
+      if (!todayData?.data) {
+        return res.json({ success: true, liveCount: 0 });
+      }
 
-      // Only keep matches that are really in progress
       const LIVE_STATUSES = ['1H', '2H', 'HT', 'ET', 'BT', 'P', 'INT', 'LIVE'];
-      const actuallyLive = liveFixtures.filter(f =>
-        LIVE_STATUSES.includes(f.fixture?.status?.short)
-      );
+      const liveMatches = [];
+
+      todayData.data.forEach(leagueGroup => {
+        leagueGroup.fixtures?.forEach(f => {
+          if (LIVE_STATUSES.includes(f.fixture?.status?.short)) {
+            liveMatches.push(f);
+          }
+        });
+      });
 
       await redis.set('fixtures:live', JSON.stringify({
-        data: actuallyLive,
-        count: actuallyLive.length,
-        fetchedAt: new Date().toISOString()
-      }), { ex: 900 }); // 15 minutes
+        data: liveMatches,
+        count: liveMatches.length,
+        fetchedAt: new Date().toISOString(),
+      }), { ex: 900 });
 
-      // Also update today's cache with latest scores (including finished matches)
-      if (liveFixtures.length > 0) {
-        const todayRaw = await redis.get('fixtures:today');
-        if (todayRaw) {
-          const todayData = safeParse(todayRaw);
-          if (todayData && todayData.data) {
-            liveFixtures.forEach(liveMatch => {
-              const id = liveMatch.fixture?.id;
-              todayData.data.forEach(group => {
-                group.fixtures = group.fixtures.map(m =>
-                  m.fixture?.id === id ? liveMatch : m
-                );
-              });
-            });
-            await redis.set('fixtures:today', JSON.stringify(todayData), { ex: 93600 });
-          }
-        }
-      }
-
-      console.log(`🔴 Live: ${actuallyLive.length} live matches, ${liveFixtures.length} total (including FT)`);
-      return res.json({ success: true, liveCount: actuallyLive.length, totalFetched: liveFixtures.length });
+      return res.json({ success: true, liveCount: liveMatches.length });
     }
 
-    // ── STANDINGS ──────────────────────────────────────
+    // ── STANDINGS ─────────────────────────────────────
     if (task === 'standings') {
-      const allStandings = {};
-      for (const [leagueId, config] of Object.entries(LEAGUES_CONFIG)) {
-        try {
-          const data = await fetchFootball('/standings', {
-            league: leagueId,
-            season: config.season
-          });
-          allStandings[leagueId] = data[0]?.league?.standings?.[0] || [];
-          await new Promise(r => setTimeout(r, 300));
-        } catch (e) {
-          console.error(`Standings failed for ${leagueId}`);
-        }
-      }
+      console.log('📊 Fetching standings...');
+
+      const allStandings = await getAllStandings();
+
       await redis.set('standings:all', JSON.stringify({
         data: allStandings,
-        fetchedAt: new Date().toISOString()
+        fetchedAt: new Date().toISOString(),
+        source: 'football-data.org'
       }), { ex: 604800 });
-      return res.json({ success: true, leagues: Object.keys(allStandings).length });
+
+      return res.json({
+        success: true,
+        leagues: Object.keys(allStandings).length,
+      });
     }
 
-    // ── WEEKLY PREDICTIONS ─────────────────────────────
+    // ── WEEKLY PREDICTIONS ────────────────────────────
     if (task === 'weekly') {
+      console.log('🔮 Running weekly predictions...');
+
       const upcomingRaw = await redis.get('fixtures:upcoming');
       if (!upcomingRaw) {
-        return res.json({ success: false, reason: 'No upcoming fixtures cached' });
+        return res.json({ success: false, reason: 'No upcoming fixtures in cache. Run daily first.' });
       }
 
       const upcoming = safeParse(upcomingRaw);
-      if (!upcoming || !upcoming.data) {
-        return res.json({ success: false, reason: 'Invalid upcoming fixtures data' });
+      if (!upcoming?.data) {
+        return res.json({ success: false, reason: 'Invalid upcoming data' });
       }
 
       const allFixtures = upcoming.data.flatMap(l => l.fixtures || []);
@@ -201,23 +152,18 @@ module.exports = async function handler(req, res) {
       let callsUsed = 0;
 
       for (const fixture of top20) {
-        const homeId = fixture.teams?.home?.id;
-        const awayId = fixture.teams?.away?.id;
+        const homeName = fixture.teams?.home?.name;
+        const awayName = fixture.teams?.away?.name;
         const fixtureId = fixture.fixture?.id;
-        if (!homeId || !awayId) continue;
+
+        if (!homeName || !awayName) continue;
 
         try {
-          const h2h = await fetchFootball('/fixtures/headtohead', {
-            h2h: `${homeId}-${awayId}`,
-            last: 10
-          });
+          // Get H2H from TheSportsDB (free, no limit)
+          const h2h = await getH2H(homeName, awayName);
           callsUsed++;
 
-          const homeWins = h2h.filter(f =>
-            f.teams?.home?.id === homeId
-              ? f.teams?.home?.winner
-              : f.teams?.away?.winner
-          ).length;
+          const homeWins = h2h.filter(f => f.teams?.home?.winner).length;
           const draws = h2h.filter(f =>
             !f.teams?.home?.winner && !f.teams?.away?.winner
           ).length;
@@ -226,8 +172,8 @@ module.exports = async function handler(req, res) {
 
           predictions[fixtureId] = {
             fixtureId,
-            homeTeam: fixture.teams?.home?.name,
-            awayTeam: fixture.teams?.away?.name,
+            homeTeam: homeName,
+            awayTeam: awayName,
             date: fixture.fixture?.date,
             leagueId: fixture.league?.id,
             h2h: h2h.slice(0, 10),
@@ -240,9 +186,11 @@ module.exports = async function handler(req, res) {
             calculatedAt: new Date().toISOString(),
           };
 
-          await new Promise(r => setTimeout(r, 200));
+          // TheSportsDB has no rate limit but be polite
+          await new Promise(r => setTimeout(r, 500));
+
         } catch (e) {
-          console.error(`H2H failed for fixture ${fixtureId}:`, e.message);
+          console.error(`H2H failed for ${homeName} vs ${awayName}:`, e.message);
         }
       }
 
@@ -251,51 +199,76 @@ module.exports = async function handler(req, res) {
         generatedAt: new Date().toISOString(),
         validUntil: new Date(Date.now() + 8 * 86400000).toISOString(),
         callsUsed,
+        source: 'thesportsdb'
       }), { ex: 691200 });
 
       return res.json({
         success: true,
         predictionsCount: Object.keys(predictions).length,
-        callsUsed
+        callsUsed,
       });
     }
 
-    // ── TEAM FORMS ─────────────────────────────────────
+    // ── TEAM FORMS ────────────────────────────────────
     if (task === 'team-forms') {
+      console.log('📈 Fetching team forms...');
+
       const upcomingRaw = await redis.get('fixtures:upcoming');
       if (!upcomingRaw) {
         return res.json({ success: false, reason: 'No upcoming fixtures' });
       }
 
       const upcoming = safeParse(upcomingRaw);
-      if (!upcoming || !upcoming.data) {
-        return res.json({ success: false, reason: 'Invalid upcoming fixtures data' });
+      if (!upcoming?.data) {
+        return res.json({ success: false, reason: 'Invalid data' });
       }
 
       const allFixtures = upcoming.data.flatMap(l => l.fixtures || []);
       const teamIds = new Set();
+
       allFixtures.forEach(f => {
         if (f.teams?.home?.id) teamIds.add(f.teams.home.id);
         if (f.teams?.away?.id) teamIds.add(f.teams.away.id);
       });
 
+      let processed = 0;
+
       for (const teamId of teamIds) {
         try {
-          const fixtures = await fetchFootball('/fixtures', { team: teamId, last: 6, status: 'FT' });
-          const form = fixtures.map(f => {
-            const isHome = f.teams?.home?.id === teamId;
-            const winner = isHome ? f.teams?.home?.winner : f.teams?.away?.winner;
-            const draw = !f.teams?.home?.winner && !f.teams?.away?.winner;
-            if (draw) return 'D';
-            return winner ? 'W' : 'L';
-          });
-          await redis.set(`team_form:${teamId}`, JSON.stringify(form), { ex: 86400 });
-          await new Promise(r => setTimeout(r, 200));
+          const form = await getTeamForm(teamId);
+
+          await redis.set(
+            `team_form:${teamId}`,
+            JSON.stringify(form),
+            { ex: 86400 }
+          );
+
+          processed++;
+          // Respect 10 req/min rate limit
+          await new Promise(r => setTimeout(r, 7000));
+
         } catch (e) {
-          console.error(`Failed to fetch form for team ${teamId}:`, e.message);
+          console.error(`Form failed for team ${teamId}:`, e.message);
         }
       }
-      return res.json({ success: true, teamsProcessed: teamIds.size });
+
+      return res.json({ success: true, teamsProcessed: processed });
+    }
+
+    // ── DEBUG ─────────────────────────────────────────
+    if (task === 'debug') {
+      const key = process.env.FOOTBALL_DATA_KEY;
+      const res2 = await fetch('https://api.football-data.org/v4/competitions', {
+        headers: { 'X-Auth-Token': key }
+      });
+      const data = await res2.json();
+
+      return res.json({
+        keyPresent: !!key,
+        keyFirst4: key ? key.substring(0, 4) + '...' : 'MISSING',
+        competitions: data.competitions?.map(c => ({ id: c.code, name: c.name })) || [],
+        error: data.message || null,
+      });
     }
 
     return res.status(400).json({ error: 'Invalid task' });
