@@ -113,6 +113,77 @@ function normalizeMatch(match, competition) {
   };
 }
 
+// Normalize TheSportsDB event format
+function normalizeSportsDBEvent(event, comp) {
+  const homeScore = parseInt(event.intHomeScore);
+  const awayScore = parseInt(event.intAwayScore);
+  const isFinished = event.strStatus === 'Match Finished';
+
+  return {
+    fixture: {
+      id: parseInt(event.idEvent),
+      date: event.dateEvent + 'T' + (event.strTime || '00:00:00') + 'Z',
+      status: {
+        short: isFinished ? 'FT' : 'NS',
+        elapsed: null,
+      },
+      venue: { name: event.strVenue || '' }
+    },
+    league: {
+      id: comp.leagueId,
+      name: comp.name,
+      flag: comp.flag,
+    },
+    teams: {
+      home: {
+        id: parseInt(event.idHomeTeam),
+        name: event.strHomeTeam,
+        logo: event.strHomeTeamBadge || '',
+        winner: isFinished ? homeScore > awayScore : null,
+      },
+      away: {
+        id: parseInt(event.idAwayTeam),
+        name: event.strAwayTeam,
+        logo: event.strAwayTeamBadge || '',
+        winner: isFinished ? awayScore > homeScore : null,
+      }
+    },
+    goals: {
+      home: isFinished ? homeScore : null,
+      away: isFinished ? awayScore : null,
+    }
+  };
+}
+
+// Get standings from TheSportsDB for leagues not covered by football-data.org
+async function getSportsDBStandings(leagueId, seasonYear) {
+  let sportsDbId = null;
+  if (leagueId === 71) sportsDbId = SPORTSDB_LEAGUES.BRASILEIRAO.id;
+  else if (leagueId === 128) sportsDbId = SPORTSDB_LEAGUES.ARGENTINA.id;
+  else return [];
+
+  const endpoint = `/lookuptable.php?l=${sportsDbId}&s=${seasonYear}`;
+  const data = await fetchSportsDB(endpoint);
+  if (!data || !data.table) return [];
+
+  return data.table.map(entry => ({
+    rank: parseInt(entry.intRank),
+    team: {
+      id: entry.idTeam ? parseInt(entry.idTeam) : null,
+      name: entry.strTeam,
+      logo: entry.strTeamBadge || '',
+    },
+    points: parseInt(entry.intPoints),
+    goalsDiff: (parseInt(entry.intGoalsFor) - parseInt(entry.intGoalsAgainst)) || 0,
+    all: {
+      played: parseInt(entry.intPlayed),
+      win: parseInt(entry.intWin),
+      draw: parseInt(entry.intDraw),
+      lose: parseInt(entry.intLoss),
+    }
+  }));
+}
+
 // Get today's fixtures from all competitions
 async function getTodayFixtures() {
   const today = new Date().toISOString().split('T')[0];
@@ -204,12 +275,12 @@ async function getUpcomingFixtures() {
 async function getAllStandings() {
   const allStandings = {};
 
+  // European leagues from football-data.org
   for (const comp of Object.values(COMPETITIONS)) {
     try {
       const data = await fetchFD(`/competitions/${comp.id}/standings`);
 
       if (data?.standings?.[0]?.table) {
-        // Normalize to your existing format
         allStandings[comp.leagueId] = data.standings[0].table.map(entry => ({
           rank: entry.position,
           team: {
@@ -228,10 +299,22 @@ async function getAllStandings() {
         }));
       }
 
-      await new Promise(r => setTimeout(r, 7000));
+      await new Promise(r => setTimeout(r, 7000)); // rate limit
 
     } catch (e) {
       console.error(`Standings failed for ${comp.name}:`, e.message);
+    }
+  }
+
+  // Brazilian and Argentine standings from TheSportsDB
+  for (const leagueId of [71, 128]) {
+    try {
+      const standings = await getSportsDBStandings(leagueId, 2025);
+      if (standings.length) {
+        allStandings[leagueId] = standings;
+      }
+    } catch (e) {
+      console.error(`SportsDB standings failed for league ${leagueId}:`, e.message);
     }
   }
 
@@ -259,7 +342,6 @@ async function getTeamForm(teamId) {
 // Get H2H from TheSportsDB
 async function getH2H(homeTeamName, awayTeamName) {
   try {
-    // Search for events between these teams
     const encoded = encodeURIComponent(`${homeTeamName} vs ${awayTeamName}`);
     const data = await fetchSportsDB(`/searchevents.php?e=${encoded}`);
     const events = data?.event || [];
@@ -294,54 +376,13 @@ async function getH2H(homeTeamName, awayTeamName) {
   }
 }
 
-// Normalize TheSportsDB event format
-function normalizeSportsDBEvent(event, comp) {
-  const homeScore = parseInt(event.intHomeScore);
-  const awayScore = parseInt(event.intAwayScore);
-  const isFinished = event.strStatus === 'Match Finished';
-
-  return {
-    fixture: {
-      id: parseInt(event.idEvent),
-      date: event.dateEvent + 'T' + (event.strTime || '00:00:00') + 'Z',
-      status: {
-        short: isFinished ? 'FT' : 'NS',
-        elapsed: null,
-      },
-      venue: { name: event.strVenue || '' }
-    },
-    league: {
-      id: comp.leagueId,
-      name: comp.name,
-      flag: comp.flag,
-    },
-    teams: {
-      home: {
-        id: parseInt(event.idHomeTeam),
-        name: event.strHomeTeam,
-        logo: event.strHomeTeamBadge || '',
-        winner: isFinished ? homeScore > awayScore : null,
-      },
-      away: {
-        id: parseInt(event.idAwayTeam),
-        name: event.strAwayTeam,
-        logo: event.strAwayTeamBadge || '',
-        winner: isFinished ? awayScore > homeScore : null,
-      }
-    },
-    goals: {
-      home: isFinished ? homeScore : null,
-      away: isFinished ? awayScore : null,
-    }
-  };
-}
-
 module.exports = {
   getTodayFixtures,
   getUpcomingFixtures,
   getAllStandings,
   getTeamForm,
   getH2H,
+  getSportsDBStandings,
   COMPETITIONS,
   SPORTSDB_LEAGUES,
   fetchFD,
