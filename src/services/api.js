@@ -78,33 +78,124 @@ export const getH2H = async (team1Id, team2Id, fixtureId) => {
   return prediction?.h2h || [];
 };
 
-// ========== CALCULATION HELPERS (unchanged) ==========
-export const calculateProbability = (form1, form2, h2h) => {
-  if (h2h && h2h.length) {
+// ========== CALCULATION HELPERS (unchanged) ==========The fix is a weighted prediction model combining multiple factors
+export const calculateProbability = (homeForm, awayForm, h2h) => {
+  // ── Factor 1: Recent Form (weight 40%) ──────────────
+  const getFormScore = (form) => {
+    if (!form || !form.length) return 0.5;
+    const pts = form.slice(-6).reduce((acc, result) => {
+      if (result === 'W') return acc + 3;
+      if (result === 'D') return acc + 1;
+      return acc;
+    }, 0);
+    return pts / 18; // max 18 points from 6 games
+  };
+
+  // Form can be array of 'W'/'D'/'L' strings OR array of fixture objects
+  const parseForm = (form, teamId) => {
+    if (!form || !form.length) return [];
+    // If it's already strings
+    if (typeof form[0] === 'string') return form;
+    // If it's fixture objects
+    return form.slice(-6).map(f => {
+      const isHome = f.teams?.home?.id === teamId;
+      const winner = isHome ? f.teams?.home?.winner : f.teams?.away?.winner;
+      if (winner === null || winner === undefined) return 'D';
+      return winner ? 'W' : 'L';
+    });
+  };
+
+  const homeFormArr = Array.isArray(homeForm) ? homeForm : [];
+  const awayFormArr = Array.isArray(awayForm) ? awayForm : [];
+
+  const homeFormScore = getFormScore(homeFormArr);
+  const awayFormScore = getFormScore(awayFormArr);
+
+  // ── Factor 2: H2H History (weight 35%) ──────────────
+  let h2hHomeAdv = 0.5; // default neutral
+  if (h2h && h2h.length >= 3) {
     const homeWins = h2h.filter(f => f.teams?.home?.winner).length;
-    const draws = h2h.filter(f => !f.teams?.home?.winner && !f.teams?.away?.winner).length;
+    const draws    = h2h.filter(f => !f.teams?.home?.winner && !f.teams?.away?.winner).length;
     const awayWins = h2h.length - homeWins - draws;
-    const total = h2h.length;
-    return {
-      home: Math.round((homeWins / total) * 100),
-      draw: Math.round((draws / total) * 100),
-      away: Math.round((awayWins / total) * 100),
-    };
+    h2hHomeAdv = (homeWins + draws * 0.5) / h2h.length;
   }
-  return { home: 40, draw: 25, away: 35 };
+
+  // ── Factor 3: Home Advantage (weight 25%) ───────────
+  // Statistically home teams win ~46% of matches in top leagues
+  const HOME_ADV = 0.46;
+
+  // ── Weighted Combination ─────────────────────────────
+  const formWeight  = 0.40;
+  const h2hWeight   = 0.35;
+  const homeAdvWeight = 0.25;
+
+  const homeScore = (
+    homeFormScore       * formWeight    +
+    h2hHomeAdv          * h2hWeight     +
+    HOME_ADV            * homeAdvWeight
+  );
+
+  const awayFormScoreNorm = 1 - awayFormScore;
+  const awayScore = (
+    awayFormScoreNorm   * formWeight    +
+    (1 - h2hHomeAdv)    * h2hWeight     +
+    (1 - HOME_ADV)      * homeAdvWeight
+  );
+
+  // ── Convert to percentages with draw buffer ──────────
+  const total = homeScore + awayScore;
+  const rawHome = Math.round((homeScore / total) * 100);
+  const rawAway = Math.round((awayScore / total) * 100);
+
+  // Draw is calculated from how close the teams are
+  const closeness = 1 - Math.abs(homeScore - awayScore);
+  const drawPct = Math.round(closeness * 28); // max ~28% draw probability
+
+  // Redistribute draw % from home and away
+  const homeDrawShare = rawHome / (rawHome + rawAway);
+  const finalHome = Math.max(15, rawHome - Math.round(drawPct * homeDrawShare));
+  const finalAway = Math.max(10, rawAway - Math.round(drawPct * (1 - homeDrawShare)));
+  const finalDraw = 100 - finalHome - finalAway;
+
+  return {
+    home: Math.max(10, finalHome),
+    draw: Math.max(5,  Math.abs(finalDraw)),
+    away: Math.max(10, finalAway),
+  };
 };
 
-export const calculateConfidence = (form1, form2, h2h) => {
-  if (!h2h?.length) return 2;
-  const homeWins = h2h.filter(f => f.teams?.home?.winner).length;
-  const awayWins = h2h.filter(f => f.teams?.away?.winner).length;
-  const total = h2h.length;
-  const diff = Math.abs(homeWins - awayWins) / total;
-  if (diff >= 0.7) return 5;
-  if (diff >= 0.5) return 4;
-  if (diff >= 0.3) return 3;
-  if (diff >= 0.15) return 2;
-  return 1;
+export const calculateConfidence = (homeForm, awayForm, h2h) => {
+  let score = 1;
+
+  // More H2H data = higher confidence
+  if (h2h?.length >= 8) score = Math.max(score, 4);
+  else if (h2h?.length >= 5) score = Math.max(score, 3);
+  else if (h2h?.length >= 3) score = Math.max(score, 2);
+
+  // Form data available increases confidence
+  const hasHomeForm = Array.isArray(homeForm) && homeForm.length > 0;
+  const hasAwayForm = Array.isArray(awayForm) && awayForm.length > 0;
+  if (hasHomeForm && hasAwayForm) score = Math.min(5, score + 1);
+
+  // One team clearly dominant in recent form
+  const getWinRate = (form) => {
+    if (!form?.length) return 0.5;
+    const wins = form.filter(r => r === 'W').length;
+    return wins / form.length;
+  };
+
+  const homeWinRate = getWinRate(
+    typeof homeForm?.[0] === 'string' ? homeForm : []
+  );
+  const awayWinRate = getWinRate(
+    typeof awayForm?.[0] === 'string' ? awayForm : []
+  );
+  const formDiff = Math.abs(homeWinRate - awayWinRate);
+
+  if (formDiff > 0.5) score = Math.min(5, score + 1);
+  else if (formDiff > 0.3) score = Math.min(5, score + 0);
+
+  return Math.min(5, Math.max(1, score));
 };
 
 export const generateMatchPreview = (homeTeam, awayTeam) => {

@@ -3,15 +3,15 @@ import { Link, useLocation } from 'react-router-dom';
 import { languages } from '../i18n';
 
 const leagues = [
-  { name: 'UCL', path: '/champions-league', flag: '🏆' },
-  { name: 'EPL', path: '/premier-league', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { name: 'La Liga', path: '/la-liga', flag: '🇪🇸' },
-  { name: 'Serie A', path: '/serie-a', flag: '🇮🇹' },
-  { name: 'Bundesliga', path: '/bundesliga', flag: '🇩🇪' },
-  { name: 'Ligue 1', path: '/ligue-1', flag: '🇫🇷' },
-  { name: 'Brasil', path: '/brasileirao', flag: '🇧🇷' },
-  { name: 'Argentina', path: '/argentina', flag: '🇦🇷' },
-  { name: '🌍 WC 2026', path: '/world-cup-2026', flag: '' },
+  { name: 'UCL',        path: '/champions-league', flag: '🏆',  label: 'UCL'        },
+  { name: 'EPL',        path: '/premier-league',   flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', label: 'EPL'        },
+  { name: 'La Liga',    path: '/la-liga',           flag: '🇪🇸',  label: 'La Liga'    },
+  { name: 'Serie A',    path: '/serie-a',           flag: '🇮🇹',  label: 'Serie A'    },
+  { name: 'Bundesliga', path: '/bundesliga',        flag: '🇩🇪',  label: 'Bundesliga' },
+  { name: 'Ligue 1',    path: '/ligue-1',           flag: '🇫🇷',  label: 'Ligue 1'    },
+  { name: 'Brasil',     path: '/brasileirao',       flag: '🇧🇷',  label: 'Brasil'     },
+  { name: 'Argentina',  path: '/argentina',         flag: '🇦🇷',  label: 'Argentina'  },
+  { name: 'WC 2026',    path: '/world-cup-2026',   flag: '🌍',   label: 'WC 2026'    },
 ];
 
 export default function Header({ language, setLanguage, favouriteTeams }) {
@@ -127,9 +127,13 @@ export default function Header({ language, setLanguage, favouriteTeams }) {
       </div>
 
       {/* League navigation */}
+      {/* League navigation */}
       <div style={{
         borderTop: '1px solid #1a1a1a',
         overflowX: 'auto',
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+        WebkitOverflowScrolling: 'touch',
       }}>
         <div style={{
           display: 'flex',
@@ -137,11 +141,12 @@ export default function Header({ language, setLanguage, favouriteTeams }) {
           maxWidth: '1400px',
           margin: '0 auto',
           gap: '2px',
+          minWidth: 'max-content',
         }}>
           <Link
             to="/"
             style={{
-              padding: '10px 15px',
+              padding: '10px 14px',
               fontSize: '12px',
               fontWeight: '600',
               color: location.pathname === '/' ? '#00c851' : '#888',
@@ -149,16 +154,20 @@ export default function Header({ language, setLanguage, favouriteTeams }) {
               borderBottom: location.pathname === '/' ? '2px solid #00c851' : '2px solid transparent',
               whiteSpace: 'nowrap',
               transition: 'all 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
             }}
           >
-            🏠 All
+            <span style={{ fontFamily: 'Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif', fontSize: '14px' }}>🏠</span>
+            <span>All</span>
           </Link>
           {leagues.map(league => (
             <Link
               key={league.path}
               to={league.path}
               style={{
-                padding: '10px 15px',
+                padding: '10px 14px',
                 fontSize: '12px',
                 fontWeight: '600',
                 color: location.pathname === league.path ? '#00c851' : '#888',
@@ -166,9 +175,15 @@ export default function Header({ language, setLanguage, favouriteTeams }) {
                 borderBottom: location.pathname === league.path ? '2px solid #00c851' : '2px solid transparent',
                 whiteSpace: 'nowrap',
                 transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
               }}
             >
-              {league.flag} {league.name}
+              <span style={{ fontFamily: 'Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif', fontSize: '14px', lineHeight: 1 }}>
+                {league.flag}
+              </span>
+              <span>{league.label}</span>
             </Link>
           ))}
         </div>

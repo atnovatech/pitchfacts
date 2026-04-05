@@ -22,7 +22,7 @@ export default function StatsPopup({ fixture, onClose, language }) {
       setLoading(true);
       try {
         const [h2hData, standingsData, homeFormData, awayFormData, injuriesData] = await Promise.all([
-          getH2H(home?.id, away?.id),
+          getH2H(home?.id, away?.id, fixture.fixture?.id),
           getStandings(leagueId, season),
           getTeamForm(home?.id, leagueId, season),
           getTeamForm(away?.id, leagueId, season),
@@ -49,16 +49,28 @@ export default function StatsPopup({ fixture, onClose, language }) {
   const prob = calculateProbability(homeForm, awayForm, h2h);
   const confidence = calculateConfidence(homeForm, awayForm, h2h);
 
-  const getFormStr = (form, teamId) => form.slice(-6).map(f => {
-    const isHome = f.teams?.home?.id === teamId;
+// Replace the getFormStr function and homeFormStr/awayFormStr lines:
+
+const getFormStr = (form) => {
+  if (!form || !Array.isArray(form)) return [];
+  // If already string array ['W','D','L']
+  if (form.length > 0 && typeof form[0] === 'string') {
+    return form.slice(-6);
+  }
+  // If fixture objects (legacy)
+  return form.slice(-6).map(f => {
+    if (!f?.teams) return 'U';
+    const isHome = f.teams?.home?.id === home?.id;
     const winner = isHome ? f.teams?.home?.winner : f.teams?.away?.winner;
-    const draw = f.teams?.home?.winner === null;
-    if (draw) return 'D';
+    if (winner === null || winner === undefined) return 'D';
     return winner ? 'W' : 'L';
   });
+};
 
-  const homeFormStr = getFormStr(homeForm, home?.id);
-  const awayFormStr = getFormStr(awayForm, away?.id);
+const homeFormStr = getFormStr(homeForm);
+const awayFormStr = getFormStr(awayForm);
+
+
 
   const homeWinsH2H = h2h.filter(f => f.teams?.home?.id === home?.id ? f.teams?.home?.winner : f.teams?.away?.winner).length;
   const drawsH2H = h2h.filter(f => !f.teams?.home?.winner && !f.teams?.away?.winner).length;
