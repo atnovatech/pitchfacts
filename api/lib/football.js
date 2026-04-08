@@ -32,6 +32,9 @@ const COMPETITIONS = {
   LIGUE1:     { id: 'FL1', name: 'Ligue 1',           flag: '🇫🇷',  leagueId: 61  },
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// API FETCHERS
+// ─────────────────────────────────────────────────────────────────────────────
 async function fetchFD(endpoint) {
   const key = process.env.FOOTBALL_DATA_KEY;
   if (!key) {
@@ -59,6 +62,9 @@ async function fetchSportsDB(endpoint) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// NORMALIZERS
+// ─────────────────────────────────────────────────────────────────────────────
 function normalizeMatch(match) {
   const code = match.competition?.code;
   const comp = COMPETITION_MAP[code];
@@ -124,7 +130,7 @@ function normalizeSportsDBEvent(event, comp) {
   return {
     fixture: {
       id: parseInt(event.idEvent),
-      // Use strTimestamp when available (already UTC), else build from date+time
+      // strTimestamp is already UTC — use it directly, else build from date+time
       date: event.strTimestamp
         ? event.strTimestamp.replace(' ', 'T') + 'Z'
         : event.dateEvent + 'T' + (event.strTime || '00:00:00') + 'Z',
@@ -173,38 +179,35 @@ function groupByLeague(matches) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TODAY'S FIXTURES
-// FD: one call for all European leagues for today's date
-// SportsDB: eventsday.php per league (Brazil/Argentina)
-//           Falls back to eventsnextleague.php filtered to today if eventsday empty
+// FD  : one call — all European leagues for today's date
+// SDB : eventsnextleague.php filtered to today
+//       eventsday.php REMOVED — broken on free key, returns random 2014 data
 // ─────────────────────────────────────────────────────────────────────────────
 async function getTodayFixtures() {
   const today = new Date().toISOString().split('T')[0];
-  console.log(`📅 Fetching today (${today}) — 1 FD call`);
+  console.log(`📅 Fetching today (${today})`);
 
+  // ── European leagues (football-data.org) ──
   const data = await fetchFD(`/matches?dateFrom=${today}&dateTo=${today}`);
   const fdMatches = (data?.matches || []).map(m => normalizeMatch(m)).filter(Boolean);
   console.log(`✅ FD today: ${fdMatches.length} matches`);
 
-  // Brazil + Argentina from TheSportsDB
+  // ── Brazil + Argentina (TheSportsDB) ──
+  // eventsday.php REMOVED — broken on free key, returns random old matches
+  // Use eventsnextleague.php and filter to today's date
   const sdbMatches = [];
   for (const comp of Object.values(SPORTSDB_LEAGUES)) {
-    // Primary: eventsday.php  (league id via l= param)
-    let events = [];
-    const dayData = await fetchSportsDB(`/eventsday.php?d=${today}&l=${comp.id}`);
-    events = dayData?.events || [];
-    console.log(`✅ SportsDB ${comp.name} eventsday: ${events.length} matches`);
+    const nextData = await fetchSportsDB(`/eventsnextleague.php?id=${comp.id}`);
+    const allNext = nextData?.events || [];
 
-    // Fallback: eventsnextleague.php — filter to today
-    if (events.length === 0) {
-      console.log(`⚠️  ${comp.name}: eventsday empty, trying eventsnextleague...`);
-      // ✅ FIX: use eventsnextleague.php (league endpoint), NOT eventsnext.php (team endpoint)
-      const nextData = await fetchSportsDB(`/eventsnextleague.php?id=${comp.id}`);
-      const allNext = nextData?.events || [];
-      events = allNext.filter(e => e.dateEvent === today);
-      console.log(`✅ SportsDB ${comp.name} fallback filtered: ${events.length} matches for today`);
-    }
+    const todayEvents = allNext.filter(e => {
+      if (!e.dateEvent) return false;
+      if (e.idLeague && e.idLeague !== comp.id) return false;
+      return e.dateEvent === today;
+    });
 
-    events.forEach(e => sdbMatches.push(normalizeSportsDBEvent(e, comp)));
+    console.log(`✅ SportsDB ${comp.name} today: ${todayEvents.length} matches`);
+    todayEvents.forEach(e => sdbMatches.push(normalizeSportsDBEvent(e, comp)));
   }
 
   return groupByLeague([...fdMatches, ...sdbMatches]);
@@ -212,34 +215,32 @@ async function getTodayFixtures() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UPCOMING FIXTURES (next 30 days)
-// FD: one call for all European leagues
-// SportsDB: eventsnextleague.php (correct league endpoint — fixes Bolton garbage)
+// FD  : one call — all European leagues
+// SDB : eventsnextleague.php filtered to 30-day window
 // ─────────────────────────────────────────────────────────────────────────────
 async function getUpcomingFixtures() {
   const today = new Date().toISOString().split('T')[0];
   const future = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
-  console.log(`📆 Fetching upcoming (${today} → ${future}) — 1 FD call`);
+  console.log(`📆 Fetching upcoming (${today} → ${future})`);
 
+  // ── European leagues ──
   const data = await fetchFD(`/matches?dateFrom=${today}&dateTo=${future}&status=SCHEDULED`);
   const fdMatches = (data?.matches || []).map(m => normalizeMatch(m)).filter(Boolean);
   console.log(`✅ FD upcoming: ${fdMatches.length} matches`);
 
-  // Brazil + Argentina upcoming
+  // ── Brazil + Argentina ──
   const sdbMatches = [];
   for (const comp of Object.values(SPORTSDB_LEAGUES)) {
-    // ✅ FIX: was /eventsnext.php?id= (team endpoint) → now /eventsnextleague.php?id= (league endpoint)
     const sdbData = await fetchSportsDB(`/eventsnextleague.php?id=${comp.id}`);
     const events = sdbData?.events || [];
-    console.log(`✅ SportsDB ${comp.name} upcoming: ${events.length} matches`);
 
-    // Filter to only show within 30-day window + only this league's matches
     const filtered = events.filter(e => {
       if (!e.dateEvent) return false;
-      // Extra guard: confirm the event actually belongs to this league
       if (e.idLeague && e.idLeague !== comp.id) return false;
       return e.dateEvent >= today && e.dateEvent <= future;
     });
-    console.log(`  → ${comp.name} filtered to window: ${filtered.length}`);
+
+    console.log(`✅ SportsDB ${comp.name} upcoming: ${filtered.length} matches`);
     filtered.forEach(e => sdbMatches.push(normalizeSportsDBEvent(e, comp)));
   }
 
@@ -252,7 +253,7 @@ async function getUpcomingFixtures() {
 async function getAllStandings() {
   const allStandings = {};
 
-  // European leagues from football-data.org
+  // ── European leagues (football-data.org) ──
   for (const [code, comp] of Object.entries(COMPETITION_MAP)) {
     try {
       console.log(`📊 Fetching standings: ${comp.name}...`);
@@ -285,7 +286,7 @@ async function getAllStandings() {
         console.log(`  ✅ ${comp.name}: ${allStandings[comp.leagueId].length} teams`);
       }
 
-      // 7 second gap to stay within 10 req/min
+      // 7 second gap to stay within 10 req/min rate limit
       await new Promise(r => setTimeout(r, 7000));
 
     } catch (e) {
@@ -294,7 +295,7 @@ async function getAllStandings() {
     }
   }
 
-  // Brazil + Argentina from TheSportsDB
+  // ── Brazil + Argentina (TheSportsDB) ──
   for (const comp of Object.values(SPORTSDB_LEAGUES)) {
     try {
       console.log(`📊 SportsDB standings: ${comp.name} ${comp.season}...`);
